@@ -1,13 +1,11 @@
-const std = @import("std");
-
 pub fn build(b: *std.Build) void {
     // Options
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // Module
-    const mod = b.addModule("restruct", .{
-        .root_source_file = b.path("src/restruct.zig"),
+    const mod = b.addModule("resizable_struct", .{
+        .root_source_file = b.path("src/resizable_struct.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -15,7 +13,7 @@ pub fn build(b: *std.Build) void {
     // Library
     const lib = b.addLibrary(.{
         .linkage = .static,
-        .name = "restruct",
+        .name = "resizable_struct",
         .root_module = mod,
     });
     b.installArtifact(lib);
@@ -37,3 +35,5 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Install docs into zig-out/docs");
     docs_step.dependOn(&docs.step);
 }
+
+const std = @import("std");

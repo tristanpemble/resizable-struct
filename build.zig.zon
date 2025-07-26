@@ -1,7 +1,7 @@
 .{
-    .name = .restruct,
+    .name = .resizable_struct,
     .version = "0.0.0",
-    .fingerprint = 0x59895c4bdcc4dbde,
+    .fingerprint = 0xac08a7f3edc45110,
     .minimum_zig_version = "0.14.1",
 
     .dependencies = .{},
