@@ -136,9 +136,9 @@ pub fn ResizableStruct(comptime Layout: type) type {
             const Field = @FieldType(Layout, @tagName(field));
             break :blk if (isResizableArray(Field)) []Field.Element else *Field;
         } {
-            const start = offsetOf(self.lens, @tagName(field));
-            const end = start + sizeOf(self.lens, @tagName(field));
-            const bytes = self.ptr[start..end];
+            const offset = offsetOf(self.lens, @tagName(field));
+            const size = sizeOf(self.lens, @tagName(field));
+            const bytes = self.ptr[offset..][0..size];
 
             return @ptrCast(@alignCast(bytes));
         }
