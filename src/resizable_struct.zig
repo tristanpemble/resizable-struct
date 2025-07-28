@@ -309,7 +309,7 @@ test "extern struct" {
     });
 
     var val = try Bytes.init(testing.allocator, .{
-        .c = 3,
+        .c = 21,
         .d = 1,
     });
     defer val.deinit(testing.allocator);
@@ -319,21 +319,21 @@ test "extern struct" {
     try testing.expectEqual(0, Bytes.offsetOf("a", val.lens));
     try testing.expectEqual(1, Bytes.sizeOf("b", val.lens));
     try testing.expectEqual(4, Bytes.offsetOf("b", val.lens));
-    try testing.expectEqual(3, Bytes.sizeOf("c", val.lens));
+    try testing.expectEqual(21, Bytes.sizeOf("c", val.lens));
     try testing.expectEqual(5, Bytes.offsetOf("c", val.lens));
     try testing.expectEqual(16, Bytes.sizeOf("d", val.lens));
-    try testing.expectEqual(16, Bytes.offsetOf("d", val.lens));
+    try testing.expectEqual(32, Bytes.offsetOf("d", val.lens));
 
     // Test field access
     const c = val.get(.c);
     c[0] = 0xC0;
     c[1] = 0xFF;
     c[2] = 0xEE;
-    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c));
+    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c)[0..3]);
 
     const d = val.get(.d);
-    d[0] = 0xBEEFBEEFBEEFBEEF;
-    try testing.expectEqual(0xBEEFBEEFBEEFBEEF, val.get(.d)[0]);
+    d[0] = 0xBEEF;
+    try testing.expectEqualSlices(u128, &.{0xBEEF}, val.get(.d)[0..1]);
 
     try val.resize(testing.allocator, .{
         .c = 512,
@@ -342,7 +342,7 @@ test "extern struct" {
     try testing.expectEqual(512, val.get(.c).len);
     try testing.expectEqual(256, val.get(.d).len);
     try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c)[0..3]);
-    try testing.expectEqual(0xBEEFBEEFBEEFBEEF, val.get(.d)[0]);
+    try testing.expectEqualSlices(u128, &.{0xBEEF}, val.get(.d)[0..1]);
 }
 
 const std = @import("std");
