@@ -120,9 +120,9 @@ pub fn StructuredSlice(comptime Layout: type) type {
         }
 
         /// Converts the byte buffer into a `StructuredSlice`. The caller is
-        /// responsible for freeing the underlying bytes. Calling `resize` or
-        /// `deinit` on the returned value is illegal behavior. Returns an error
-        /// when the slice is too small.
+        /// responsible for freeing the underlying bytes. Calling `deinit` on
+        /// the returned value is illegal behavior. Returns an error when the
+        /// slice is too small.
         pub fn fromBuffer(buf: []align(@alignOf(Layout)) u8, lens: Lengths) Error!Self {
             if (buf.len < calcSize(lens)) return error.InvalidLength;
             return .{
@@ -136,30 +136,23 @@ pub fn StructuredSlice(comptime Layout: type) type {
             return self.ptr[0..calcSize(self.lens)];
         }
 
-        /// Resizes the struct. Invalidates element pointers if relocation is needed.
-        pub fn resize(self: *Self, allocator: Allocator, new_lens: Lengths) Error!void {
-            if (std.meta.eql(self.lens, new_lens)) return;
-
-            const old = self.*;
-            const new = try Self.init(allocator, new_lens);
-
+        /// Copies all fields from one value into another. If a field is a
+        /// `ResizableArray` and the lengths differ, the shorter length is used,
+        /// possibly truncating the source array or leaving uninitialized memory
+        /// in the destination array.
+        pub fn copy(dest: Self, source: Self) Error!void {
             inline for (field_info) |field| {
                 const tag = @field(FieldEnum(Layout), field.name);
-                const old_field = old.get(tag);
-                const new_field = new.get(tag);
+                const source_field = source.get(tag);
+                const dest_field = dest.get(tag);
 
                 if (comptime isFlexibleArray(@FieldType(Layout, field.name))) {
-                    const len = @min(old_field.len, new_field.len);
-                    @memcpy(new_field[0..len], old_field[0..len]);
+                    const len = @min(source_field.len, dest_field.len);
+                    @memcpy(dest_field[0..len], source_field[0..len]);
                 } else {
-                    new_field.* = old_field.*;
+                    dest_field.* = source_field.*;
                 }
             }
-
-            self.ptr = new.ptr;
-            self.lens = new.lens;
-
-            allocator.free(old.asBytes());
         }
 
         /// Returns a pointer to the given field. If the field is a `FlexibleArray`, returns a slice of elements.
@@ -298,23 +291,25 @@ test "allocated" {
     try testing.expectEqualSlices(u8, &.{ 0xC0, 0xDE, 0xD0, 0x0D }, my_type.get(.second));
     try testing.expectEqualDeep(&Tail{ .tail_val = 0xCC }, my_type.get(.tail));
 
-    try my_type.resize(testing.allocator, .{
+    var new = try MyType.init(testing.allocator, .{
         .first = 3,
         .second = 5,
     });
+    defer new.deinit(testing.allocator);
+    try new.copy(my_type);
 
-    first = my_type.get(.first);
+    first = new.get(.first);
     first[2] = 0xF00B42;
-    second = my_type.get(.second);
+    second = new.get(.second);
     second[4] = 0x42;
 
-    try testing.expectEqualDeep(&Head{ .head_val = 0xAA }, my_type.get(.head));
-    try testing.expectEqual(3, my_type.get(.first).len);
-    try testing.expectEqualSlices(u32, &.{ 0xC0FFEE, 0xBEEF, 0xF00B42 }, my_type.get(.first));
-    try testing.expectEqualDeep(&Middle{ .middle_val = 0xBB }, my_type.get(.middle));
-    try testing.expectEqual(5, my_type.get(.second).len);
-    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xDE, 0xD0, 0x0D, 0x42 }, my_type.get(.second));
-    try testing.expectEqualDeep(&Tail{ .tail_val = 0xCC }, my_type.get(.tail));
+    try testing.expectEqualDeep(&Head{ .head_val = 0xAA }, new.get(.head));
+    try testing.expectEqual(3, new.get(.first).len);
+    try testing.expectEqualSlices(u32, &.{ 0xC0FFEE, 0xBEEF, 0xF00B42 }, new.get(.first));
+    try testing.expectEqualDeep(&Middle{ .middle_val = 0xBB }, new.get(.middle));
+    try testing.expectEqual(5, new.get(.second).len);
+    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xDE, 0xD0, 0x0D, 0x42 }, new.get(.second));
+    try testing.expectEqualDeep(&Tail{ .tail_val = 0xCC }, new.get(.tail));
 }
 
 test "extern struct" {
@@ -352,14 +347,17 @@ test "extern struct" {
     d[0] = 0xBEEF;
     try testing.expectEqualSlices(u128, &.{0xBEEF}, val.get(.d)[0..1]);
 
-    try val.resize(testing.allocator, .{
+    var new = try Bytes.init(testing.allocator, .{
         .c = 512,
         .d = 256,
     });
-    try testing.expectEqual(512, val.get(.c).len);
-    try testing.expectEqual(256, val.get(.d).len);
-    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c)[0..3]);
-    try testing.expectEqualSlices(u128, &.{0xBEEF}, val.get(.d)[0..1]);
+    defer new.deinit(testing.allocator);
+    try new.copy(val);
+
+    try testing.expectEqual(512, new.get(.c).len);
+    try testing.expectEqual(256, new.get(.d).len);
+    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, new.get(.c)[0..3]);
+    try testing.expectEqualSlices(u128, &.{0xBEEF}, new.get(.d)[0..1]);
 }
 
 test "fromOwnedBytes" {
