@@ -53,9 +53,6 @@ pub fn ResizableStruct(comptime Layout: type) type {
             break :blk fields;
         };
 
-        /// The struct alignment - max alignment of all fields.
-        const Alignment = @alignOf(Layout);
-
         /// A comptime generated struct type containing `usize` length fields for each `ResizableArray` field of `Layout`.
         pub const Lengths = blk: {
             var fields: [field_info.len]StructField = undefined;
@@ -83,7 +80,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         };
 
         /// The pointer to the struct's data.
-        ptr: [*]align(Alignment) u8,
+        ptr: [*]align(@alignOf(Layout)) u8,
 
         /// The length of each `ResizableArray` field.
         lens: Lengths,
@@ -91,7 +88,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         /// Initializes a new instance of the struct with the given lengths of its `ResizableArray` fields.
         pub fn init(allocator: Allocator, lens: Lengths) Error!Self {
             const size = calcSize(lens);
-            const bytes = try allocator.alignedAlloc(u8, Alignment, size);
+            const bytes = try allocator.alignedAlloc(u8, @alignOf(Layout), size);
 
             return Self{ .ptr = bytes.ptr, .lens = lens };
         }
@@ -103,7 +100,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         }
 
         /// Takes ownership of the passed in byte slice.
-        pub fn fromOwnedBytes(bytes: []align(Alignment) u8, lens: Lengths) Error!Self {
+        pub fn fromOwnedBytes(bytes: []align(@alignOf(Layout)) u8, lens: Lengths) Error!Self {
             if (bytes.len != calcSize(lens)) return error.InvalidLength;
             return .{
                 .ptr = bytes.ptr,
@@ -123,7 +120,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
             // For now, we always reallocate when resizing. We could try to support resizing
             // in place, but the added complexity seems unlikely to be worth it for most use cases.
             const new_size = calcSize(new_lens);
-            const new_bytes = try allocator.alignedAlloc(u8, Alignment, new_size);
+            const new_bytes = try allocator.alignedAlloc(u8, @alignOf(Layout), new_size);
 
             inline for (field_info) |field| {
                 const old_field_offset = offsetOf(field.name, self.lens);
@@ -190,21 +187,9 @@ pub fn ResizableStruct(comptime Layout: type) type {
             const tail_size = sizeOf(tail_field, lens);
             const tail_offset = offsetOf(tail_field, lens);
 
-            return std.mem.alignForward(usize, tail_offset + tail_size, Alignment);
+            return std.mem.alignForward(usize, tail_offset + tail_size, @alignOf(Layout));
         }
     };
-}
-
-test "Alignment is max" {
-    const MyType = ResizableStruct(struct {
-        a: u8,
-        b: u16,
-        c: u32,
-        d: ResizableArray(u128),
-        u: u64,
-    });
-
-    try testing.expectEqual(@alignOf(u128), MyType.Alignment);
 }
 
 test "ResizableArray alignment" {
@@ -232,24 +217,24 @@ test "ResizableArray alignment as a field" {
 }
 
 test "calcSize is multiple of alignment" {
-    const Alignment = 8;
-    const MyType = ResizableStruct(struct {
-        head: u128 align(Alignment),
+    const Layout = struct {
+        head: u128 align(8),
         tail: ResizableArray(u8),
-    });
+    };
+    const MyType = ResizableStruct(Layout);
 
     try testing.expectEqual(@sizeOf(u128), MyType.calcSize(.{
         .tail = 0,
     }));
 
-    inline for (1..Alignment + 1) |i| {
-        try testing.expectEqual(@sizeOf(u128) + Alignment, MyType.calcSize(.{
+    inline for (1..@alignOf(Layout) + 1) |i| {
+        try testing.expectEqual(@sizeOf(u128) + @alignOf(Layout), MyType.calcSize(.{
             .tail = i,
         }));
     }
 
-    try testing.expectEqual(@sizeOf(u128) + 2 * Alignment, MyType.calcSize(.{
-        .tail = Alignment + 1,
+    try testing.expectEqual(@sizeOf(u128) + 2 * @alignOf(Layout), MyType.calcSize(.{
+        .tail = @alignOf(Layout) + 1,
     }));
 }
 
