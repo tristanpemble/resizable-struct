@@ -1,34 +1,34 @@
 //! Structs with runtime-sized array fields.
 //!
-//! This module provides `ResizableStruct` for creating heap-allocated types that can be sized at runtime
-//! and `ResizableArray` for marking the fields on that struct that are variable-length arrays.
+//! This module provides `StructuredSlice` for creating heap-allocated types that can be sized at runtime
+//! and `FlexibleArray` for marking the fields on that struct that are variable-length arrays.
 
 pub const Error = error{
     OutOfMemory,
     InvalidLength,
 };
 
-/// This type is zero sized and has no methods. It exists as an API for `ResizableStruct`,
+/// This type is zero sized and has no methods. It exists as an API for `StructuredSlice`,
 /// indicating which fields are runtime sized arrays of elements.
-pub fn ResizableArray(comptime T: type) type {
+pub fn FlexibleArray(comptime T: type) type {
     return struct {
         pub const Element = T;
-        // This forces alignment to match the element type, which ResizableStruct uses to ensure proper alignment.
+        // This forces alignment to match the element type, which StructuredSlice uses to ensure proper alignment.
         _: void align(@alignOf(T)) = {},
     };
 }
 
-fn isResizableArray(comptime T: type) bool {
-    return @typeInfo(T) == .@"struct" and @hasDecl(T, "Element") and T == ResizableArray(T.Element);
+fn isFlexibleArray(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "Element") and T == FlexibleArray(T.Element);
 }
 
-/// A heap allocated type that can be sized at runtime to contain any number of `ResizableArray`s.
+/// A heap allocated type that can be sized at runtime to contain any number of `FlexibleArray`s.
 ///
-/// Internally, it is represented as a pointer and a set of lengths for each `ResizableArray` field.
-pub fn ResizableStruct(comptime Layout: type) type {
+/// Internally, it is represented as a pointer and a set of lengths for each `FlexibleArray` field.
+pub fn StructuredSlice(comptime Layout: type) type {
     comptime {
         if (@typeInfo(Layout).@"struct".layout == .@"packed") {
-            @compileError("Packed structs have a fixed size and are fundamentally incompatible with the idea of a resizable struct.");
+            @compileError("Packed structs have a fixed size and cannot be used with a StructuredSlice.");
         }
     }
 
@@ -53,12 +53,12 @@ pub fn ResizableStruct(comptime Layout: type) type {
             break :blk fields;
         };
 
-        /// A comptime generated struct type containing `usize` length fields for each `ResizableArray` field of `Layout`.
+        /// A comptime generated struct type containing `usize` length fields for each `FlexibleArray` field of `Layout`.
         pub const Lengths = blk: {
             var fields: [field_info.len]StructField = undefined;
             var i: usize = 0;
             for (field_info) |field| {
-                if (isResizableArray(field.type)) {
+                if (isFlexibleArray(field.type)) {
                     fields[i] = .{
                         .name = field.name,
                         .type = usize,
@@ -82,10 +82,10 @@ pub fn ResizableStruct(comptime Layout: type) type {
         /// The pointer to the struct's data.
         ptr: [*]align(@alignOf(Layout)) u8,
 
-        /// The length of each `ResizableArray` field.
+        /// The length of each `FlexibleArray` field.
         lens: Lengths,
 
-        /// Initializes a new instance of the struct with the given lengths of its `ResizableArray` fields.
+        /// Initializes a new instance of the struct with the given lengths of its `FlexibleArray` fields.
         pub fn init(allocator: Allocator, lens: Lengths) Error!Self {
             const size = calcSize(lens);
             const bytes = try allocator.alignedAlloc(u8, @alignOf(Layout), size);
@@ -100,7 +100,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         }
 
         /// Calculate the number of bytes required to store this struct given the
-        /// lengths of its `ResizableArray` fields.
+        /// lengths of its `FlexibleArray` fields.
         pub fn calcSize(lens: Lengths) usize {
             const tail_field = field_info[field_info.len - 1].name;
             const tail_size = sizeOf(tail_field, lens);
@@ -119,7 +119,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
             };
         }
 
-        /// Converts the byte buffer into a `ResizableStruct`. The caller is
+        /// Converts the byte buffer into a `StructuredSlice`. The caller is
         /// responsible for freeing the underlying bytes. Calling `resize` or
         /// `deinit` on the returned value is illegal behavior. Returns an error
         /// when the slice is too small.
@@ -148,7 +148,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
                 const old_field = old.get(tag);
                 const new_field = new.get(tag);
 
-                if (comptime isResizableArray(@FieldType(Layout, field.name))) {
+                if (comptime isFlexibleArray(@FieldType(Layout, field.name))) {
                     const len = @min(old_field.len, new_field.len);
                     @memcpy(new_field[0..len], old_field[0..len]);
                 } else {
@@ -162,10 +162,10 @@ pub fn ResizableStruct(comptime Layout: type) type {
             allocator.free(old.asBytes());
         }
 
-        /// Returns a pointer to the given field. If the field is a `ResizableArray`, returns a slice of elements.
+        /// Returns a pointer to the given field. If the field is a `FlexibleArray`, returns a slice of elements.
         pub fn get(self: Self, comptime field: FieldEnum(Layout)) blk: {
             const Field = @FieldType(Layout, @tagName(field));
-            break :blk if (isResizableArray(Field)) []Field.Element else *Field;
+            break :blk if (isFlexibleArray(Field)) []Field.Element else *Field;
         } {
             const offset = offsetOf(@tagName(field), self.lens);
             const size = sizeOf(@tagName(field), self.lens);
@@ -188,10 +188,10 @@ pub fn ResizableStruct(comptime Layout: type) type {
             unreachable;
         }
 
-        /// Returns the byte size of the given field, calculating the size of `ResizableArray` fields using their length.
+        /// Returns the byte size of the given field, calculating the size of `FlexibleArray` fields using their length.
         fn sizeOf(comptime field_name: []const u8, lens: Lengths) usize {
             const Field = @FieldType(Layout, field_name);
-            if (comptime isResizableArray(Field)) {
+            if (comptime isFlexibleArray(Field)) {
                 return @sizeOf(Field.Element) * @field(lens, field_name);
             } else {
                 return @sizeOf(Field);
@@ -205,21 +205,21 @@ pub fn ResizableStruct(comptime Layout: type) type {
     };
 }
 
-test "ResizableArray alignment" {
-    try testing.expectEqual(16, @alignOf(ResizableArray(u128)));
-    try testing.expectEqual(8, @alignOf(ResizableArray(u64)));
-    try testing.expectEqual(4, @alignOf(ResizableArray(u32)));
-    try testing.expectEqual(2, @alignOf(ResizableArray(u16)));
-    try testing.expectEqual(1, @alignOf(ResizableArray(u8)));
+test "FlexibleArray alignment" {
+    try testing.expectEqual(16, @alignOf(FlexibleArray(u128)));
+    try testing.expectEqual(8, @alignOf(FlexibleArray(u64)));
+    try testing.expectEqual(4, @alignOf(FlexibleArray(u32)));
+    try testing.expectEqual(2, @alignOf(FlexibleArray(u16)));
+    try testing.expectEqual(1, @alignOf(FlexibleArray(u8)));
 }
 
-test "ResizableArray alignment as a field" {
+test "FlexibleArray alignment as a field" {
     const fields = @typeInfo(struct {
-        a: ResizableArray(u128),
-        b: ResizableArray(u64),
-        c: ResizableArray(u32),
-        d: ResizableArray(u16),
-        u: ResizableArray(u8),
+        a: FlexibleArray(u128),
+        b: FlexibleArray(u64),
+        c: FlexibleArray(u32),
+        d: FlexibleArray(u16),
+        u: FlexibleArray(u8),
     }).@"struct".fields;
 
     try testing.expectEqual(16, fields[0].alignment);
@@ -232,9 +232,9 @@ test "ResizableArray alignment as a field" {
 test "calcSize is multiple of alignment" {
     const Layout = struct {
         head: u128 align(8),
-        tail: ResizableArray(u8),
+        tail: FlexibleArray(u8),
     };
-    const MyType = ResizableStruct(Layout);
+    const MyType = StructuredSlice(Layout);
 
     try testing.expectEqual(@sizeOf(u128), MyType.calcSize(.{
         .tail = 0,
@@ -261,11 +261,11 @@ test "allocated" {
     const Tail = struct {
         tail_val: u32,
     };
-    const MyType = ResizableStruct(struct {
+    const MyType = StructuredSlice(struct {
         head: Head,
-        first: ResizableArray(u32),
+        first: FlexibleArray(u32),
         middle: Middle,
-        second: ResizableArray(u8),
+        second: FlexibleArray(u8),
         tail: Tail,
     });
 
@@ -318,11 +318,11 @@ test "allocated" {
 }
 
 test "extern struct" {
-    const Bytes = ResizableStruct(extern struct {
+    const Bytes = StructuredSlice(extern struct {
         a: u8,
         b: u8 align(4),
-        c: ResizableArray(u8),
-        d: ResizableArray(u128),
+        c: FlexibleArray(u8),
+        d: FlexibleArray(u128),
     });
 
     var val = try Bytes.init(testing.allocator, .{
@@ -370,9 +370,9 @@ test "fromOwnedBytes" {
         0xBEEF,
         0xDEAD,
     };
-    const Bytes = ResizableStruct(struct {
+    const Bytes = StructuredSlice(struct {
         len: u16,
-        data: ResizableArray(u16),
+        data: FlexibleArray(u16),
     });
 
     const bytes = try Bytes.fromOwnedBytes(@ptrCast(packet[0..]), .{ .data = 4 });
@@ -388,9 +388,9 @@ test "asBytes" {
         0xDEAD,
     };
 
-    const Bytes = ResizableStruct(struct {
+    const Bytes = StructuredSlice(struct {
         len: u16,
-        data: ResizableArray(u16),
+        data: FlexibleArray(u16),
     });
 
     const bytes = Bytes{
@@ -406,9 +406,9 @@ test "asBytes" {
 test "fromBuffer" {
     var buf: [1024]u8 align(2) = undefined;
 
-    const Bytes = ResizableStruct(struct {
+    const Bytes = StructuredSlice(struct {
         len: u16,
-        data: ResizableArray(u16),
+        data: FlexibleArray(u16),
     });
 
     const bytes = try Bytes.fromBuffer(@ptrCast(buf[0..]), .{ .data = 4 });
