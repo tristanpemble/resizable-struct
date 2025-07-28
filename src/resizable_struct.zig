@@ -1,7 +1,7 @@
-//! Structs with runtime-sized array fields.
+//! A slice-like data structure for working with structs that hold runtime sized array fields.
 //!
-//! This module provides `StructuredSlice` for creating heap-allocated types that can be sized at runtime
-//! and `FlexibleArray` for marking the fields on that struct that are variable-length arrays.
+//! This module provides a `StructuredSlice`, which acts as a multi-field slice, and `FlexibleArray`
+//! for marking the fields in the `StructuredSlice` layout that are sized at runtime.
 
 pub const Error = error{
     OutOfMemory,
@@ -22,7 +22,7 @@ fn isFlexibleArray(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasDecl(T, "Element") and T == FlexibleArray(T.Element);
 }
 
-/// A heap allocated type that can be sized at runtime to contain any number of `FlexibleArray`s.
+/// A slice-like type for working with structs that can hold runtime sized `FlexibleArray`s.
 ///
 /// Internally, it is represented as a pointer and a set of lengths for each `FlexibleArray` field.
 pub fn StructuredSlice(comptime Layout: type) type {
