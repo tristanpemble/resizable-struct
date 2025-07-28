@@ -95,7 +95,7 @@ pub fn StructuredSlice(comptime Layout: type) type {
 
         /// Deinitializes the struct, freeing its memory.
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            allocator.free(self.ptr[0..calcSize(self.lens)]);
+            allocator.free(self.asBytes());
             self.* = undefined;
         }
 
