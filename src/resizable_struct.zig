@@ -8,6 +8,8 @@
 pub fn ResizableArray(comptime T: type) type {
     return struct {
         pub const Element = T;
+        // This forces alignment to match the element type, which ResizableStruct uses to ensure proper alignment.
+        _: void align(@alignOf(T)) = {},
     };
 }
 
@@ -21,10 +23,7 @@ fn isResizableArray(comptime T: type) bool {
 pub fn ResizableStruct(comptime Layout: type) type {
     comptime {
         if (@typeInfo(Layout).@"struct".layout == .@"packed") {
-            @compileError("Packed structs can not be used with `ResizableStruct`.");
-        }
-        if (@typeInfo(Layout).@"struct".layout == .@"extern") {
-            @compileError("Extern structs can not be used with `ResizableStruct`.");
+            @compileError("Packed structs have a fixed size and are fundamentally incompatible with the idea of a resizable struct.");
         }
     }
 
@@ -50,13 +49,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         };
 
         /// The struct alignment - max alignment of all fields.
-        const Alignment = blk: {
-            var alignment = 0;
-            for (field_info) |field| {
-                alignment = @max(alignment, field.alignment);
-            }
-            break :blk alignment;
-        };
+        const Alignment = @alignOf(Layout);
 
         /// A comptime generated struct type containing `usize` length fields for each `ResizableArray` field of `Layout`.
         pub const Lengths = blk: {
@@ -114,12 +107,12 @@ pub fn ResizableStruct(comptime Layout: type) type {
             const new_bytes = try allocator.alignedAlloc(u8, Alignment, new_size);
 
             inline for (field_info) |field| {
-                const old_field_offset = offsetOf(self.lens, field.name);
-                const old_field_size = sizeOf(self.lens, field.name);
+                const old_field_offset = offsetOf(field.name, self.lens);
+                const old_field_size = sizeOf(field.name, self.lens);
                 const old_field_bytes = self.ptr[old_field_offset .. old_field_offset + old_field_size];
 
-                const new_field_offset = offsetOf(new_lens, field.name);
-                const new_field_size = sizeOf(new_lens, field.name);
+                const new_field_offset = offsetOf(field.name, new_lens);
+                const new_field_size = sizeOf(field.name, new_lens);
                 const new_field_bytes = new_bytes[new_field_offset .. new_field_offset + new_field_size];
 
                 const copy_size = @min(old_field_size, new_field_size);
@@ -136,28 +129,29 @@ pub fn ResizableStruct(comptime Layout: type) type {
             const Field = @FieldType(Layout, @tagName(field));
             break :blk if (isResizableArray(Field)) []Field.Element else *Field;
         } {
-            const offset = offsetOf(self.lens, @tagName(field));
-            const size = sizeOf(self.lens, @tagName(field));
+            const offset = offsetOf(@tagName(field), self.lens);
+            const size = sizeOf(@tagName(field), self.lens);
             const bytes = self.ptr[offset..][0..size];
 
             return @ptrCast(@alignCast(bytes));
         }
 
         /// Returns the byte offset of the given field.
-        fn offsetOf(lens: Lengths, comptime field_name: []const u8) usize {
+        fn offsetOf(comptime field_name: []const u8, lens: Lengths) usize {
             var offset: usize = 0;
             inline for (field_info) |f| {
+                offset = std.mem.alignForward(usize, offset, f.alignment);
                 if (comptime std.mem.eql(u8, f.name, field_name)) {
                     return offset;
                 } else {
-                    offset += sizeOf(lens, f.name);
+                    offset += sizeOf(f.name, lens);
                 }
             }
             unreachable;
         }
 
         /// Returns the byte size of the given field, calculating the size of `ResizableArray` fields using their length.
-        fn sizeOf(lens: Lengths, comptime field_name: []const u8) usize {
+        fn sizeOf(comptime field_name: []const u8, lens: Lengths) usize {
             const Field = @FieldType(Layout, field_name);
             if (comptime isResizableArray(Field)) {
                 return @sizeOf(Field.Element) * @field(lens, field_name);
@@ -168,19 +162,14 @@ pub fn ResizableStruct(comptime Layout: type) type {
 
         /// Returns the byte alignment of the given field.
         fn alignOf(comptime field_name: []const u8) usize {
-            inline for (field_info) |field| {
-                if (comptime std.mem.eql(u8, field.name, field_name)) {
-                    return field.alignment;
-                }
-            }
-            unreachable;
+            return std.meta.fieldInfo(Layout, @field(FieldEnum(Layout), field_name)).alignment;
         }
 
         /// Calculate the byte size of this struct given the lengths of its `ResizableArray` fields.
         fn calcSize(lens: Lengths) usize {
-            const tail_name = field_info[field_info.len - 1].name;
-            const tail_size = sizeOf(lens, tail_name);
-            const tail_offset = offsetOf(lens, tail_name);
+            const tail_field = field_info[field_info.len - 1].name;
+            const tail_size = sizeOf(tail_field, lens);
+            const tail_offset = offsetOf(tail_field, lens);
 
             return std.mem.alignForward(usize, tail_offset + tail_size, Alignment);
         }
@@ -192,11 +181,35 @@ test "Alignment is max" {
         a: u8,
         b: u16,
         c: u32,
-        d: u128,
+        d: ResizableArray(u128),
         u: u64,
     });
 
-    try std.testing.expectEqual(@alignOf(u128), MyType.Alignment);
+    try testing.expectEqual(@alignOf(u128), MyType.Alignment);
+}
+
+test "ResizableArray alignment" {
+    try testing.expectEqual(16, @alignOf(ResizableArray(u128)));
+    try testing.expectEqual(8, @alignOf(ResizableArray(u64)));
+    try testing.expectEqual(4, @alignOf(ResizableArray(u32)));
+    try testing.expectEqual(2, @alignOf(ResizableArray(u16)));
+    try testing.expectEqual(1, @alignOf(ResizableArray(u8)));
+}
+
+test "ResizableArray alignment as a field" {
+    const fields = @typeInfo(struct {
+        a: ResizableArray(u128),
+        b: ResizableArray(u64),
+        c: ResizableArray(u32),
+        d: ResizableArray(u16),
+        u: ResizableArray(u8),
+    }).@"struct".fields;
+
+    try testing.expectEqual(16, fields[0].alignment);
+    try testing.expectEqual(8, fields[1].alignment);
+    try testing.expectEqual(4, fields[2].alignment);
+    try testing.expectEqual(2, fields[3].alignment);
+    try testing.expectEqual(1, fields[4].alignment);
 }
 
 test "calcSize is multiple of alignment" {
@@ -206,17 +219,17 @@ test "calcSize is multiple of alignment" {
         tail: ResizableArray(u8),
     });
 
-    try std.testing.expectEqual(@sizeOf(u128), MyType.calcSize(.{
+    try testing.expectEqual(@sizeOf(u128), MyType.calcSize(.{
         .tail = 0,
     }));
 
     inline for (1..Alignment + 1) |i| {
-        try std.testing.expectEqual(@sizeOf(u128) + Alignment, MyType.calcSize(.{
+        try testing.expectEqual(@sizeOf(u128) + Alignment, MyType.calcSize(.{
             .tail = i,
         }));
     }
 
-    try std.testing.expectEqual(@sizeOf(u128) + 2 * Alignment, MyType.calcSize(.{
+    try testing.expectEqual(@sizeOf(u128) + 2 * Alignment, MyType.calcSize(.{
         .tail = Alignment + 1,
     }));
 }
@@ -285,6 +298,51 @@ test "allocated" {
     try testing.expectEqual(5, my_type.get(.second).len);
     try testing.expectEqualSlices(u8, &.{ 0xC0, 0xDE, 0xD0, 0x0D, 0x42 }, my_type.get(.second));
     try testing.expectEqualDeep(&Tail{ .tail_val = 0xCC }, my_type.get(.tail));
+}
+
+test "extern struct" {
+    const Bytes = ResizableStruct(extern struct {
+        a: u8,
+        b: u8 align(4),
+        c: ResizableArray(u8),
+        d: ResizableArray(u128),
+    });
+
+    var val = try Bytes.init(testing.allocator, .{
+        .c = 3,
+        .d = 1,
+    });
+    defer val.deinit(testing.allocator);
+
+    // Ensure alignment
+    try testing.expectEqual(1, Bytes.sizeOf("a", val.lens));
+    try testing.expectEqual(0, Bytes.offsetOf("a", val.lens));
+    try testing.expectEqual(1, Bytes.sizeOf("b", val.lens));
+    try testing.expectEqual(4, Bytes.offsetOf("b", val.lens));
+    try testing.expectEqual(3, Bytes.sizeOf("c", val.lens));
+    try testing.expectEqual(5, Bytes.offsetOf("c", val.lens));
+    try testing.expectEqual(16, Bytes.sizeOf("d", val.lens));
+    try testing.expectEqual(16, Bytes.offsetOf("d", val.lens));
+
+    // Test field access
+    const c = val.get(.c);
+    c[0] = 0xC0;
+    c[1] = 0xFF;
+    c[2] = 0xEE;
+    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c));
+
+    const d = val.get(.d);
+    d[0] = 0xBEEFBEEFBEEFBEEF;
+    try testing.expectEqual(0xBEEFBEEFBEEFBEEF, val.get(.d)[0]);
+
+    try val.resize(testing.allocator, .{
+        .c = 512,
+        .d = 256,
+    });
+    try testing.expectEqual(512, val.get(.c).len);
+    try testing.expectEqual(256, val.get(.d).len);
+    try testing.expectEqualSlices(u8, &.{ 0xC0, 0xFF, 0xEE }, val.get(.c)[0..3]);
+    try testing.expectEqual(0xBEEFBEEFBEEFBEEF, val.get(.d)[0]);
 }
 
 const std = @import("std");
