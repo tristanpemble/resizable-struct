@@ -3,6 +3,11 @@
 //! This module provides `ResizableStruct` for creating heap-allocated types that can be sized at runtime
 //! and `ResizableArray` for marking the fields on that struct that are variable-length arrays.
 
+pub const Error = error{
+    OutOfMemory,
+    InvalidLength,
+};
+
 /// This type is zero sized and has no methods. It exists as an API for `ResizableStruct`,
 /// indicating which fields are runtime sized arrays of elements.
 pub fn ResizableArray(comptime T: type) type {
@@ -84,7 +89,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         lens: Lengths,
 
         /// Initializes a new instance of the struct with the given lengths of its `ResizableArray` fields.
-        pub fn init(allocator: Allocator, lens: Lengths) Oom!Self {
+        pub fn init(allocator: Allocator, lens: Lengths) Error!Self {
             const size = calcSize(lens);
             const bytes = try allocator.alignedAlloc(u8, Alignment, size);
 
@@ -97,8 +102,22 @@ pub fn ResizableStruct(comptime Layout: type) type {
             self.* = undefined;
         }
 
+        /// Takes ownership of the passed in byte slice.
+        pub fn fromOwnedBytes(bytes: []align(Alignment) u8, lens: Lengths) Error!Self {
+            if (bytes.len != calcSize(lens)) return error.InvalidLength;
+            return .{
+                .ptr = bytes.ptr,
+                .lens = lens,
+            };
+        }
+
+        /// Returns a slice of the underlying bytes.
+        pub fn asBytes(self: Self) []u8 {
+            return self.ptr[0..calcSize(self.lens)];
+        }
+
         /// Resizes the struct. Invalidates element pointers if relocation is needed.
-        pub fn resize(self: *Self, allocator: Allocator, new_lens: Lengths) Oom!void {
+        pub fn resize(self: *Self, allocator: Allocator, new_lens: Lengths) Error!void {
             if (std.meta.eql(self.lens, new_lens)) return;
 
             // For now, we always reallocate when resizing. We could try to support resizing
@@ -345,11 +364,52 @@ test "extern struct" {
     try testing.expectEqualSlices(u128, &.{0xBEEF}, val.get(.d)[0..1]);
 }
 
+test "fromOwnedBytes" {
+    var packet = [_]u16{
+        4,
+        0xD00D,
+        0xCAFE,
+        0xBEEF,
+        0xDEAD,
+    };
+    const Bytes = ResizableStruct(struct {
+        len: u16,
+        data: ResizableArray(u16),
+    });
+
+    const bytes = try Bytes.fromOwnedBytes(@ptrCast(packet[0..]), .{ .data = 4 });
+    try testing.expectEqualSlices(u16, packet[1..], bytes.get(.data));
+}
+
+test "asBytes" {
+    var packet = [_]u16{
+        4,
+        0xD00D,
+        0xCAFE,
+        0xBEEF,
+        0xDEAD,
+    };
+
+    const Bytes = ResizableStruct(struct {
+        len: u16,
+        data: ResizableArray(u16),
+    });
+
+    const bytes = Bytes{
+        .ptr = std.mem.asBytes(packet[0..]),
+        .lens = .{
+            .data = 4,
+        },
+    };
+
+    try testing.expectEqualSlices(u8, std.mem.asBytes(packet[0..]), bytes.asBytes());
+}
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const FieldEnum = std.meta.FieldEnum;
 const mem = std.mem;
-const Oom = std.mem.Allocator.Error;
 const Struct = std.builtin.Type.Struct;
 const StructField = std.builtin.Type.StructField;
 const testing = std.testing;
