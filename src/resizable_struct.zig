@@ -99,11 +99,34 @@ pub fn ResizableStruct(comptime Layout: type) type {
             self.* = undefined;
         }
 
-        /// Takes ownership of the passed in byte slice.
+        /// Calculate the number of bytes required to store this struct given the
+        /// lengths of its `ResizableArray` fields.
+        pub fn calcSize(lens: Lengths) usize {
+            const tail_field = field_info[field_info.len - 1].name;
+            const tail_size = sizeOf(tail_field, lens);
+            const tail_offset = offsetOf(tail_field, lens);
+
+            return std.mem.alignForward(usize, tail_offset + tail_size, @alignOf(Layout));
+        }
+
+        /// Takes ownership of the passed in byte slice. The slice must be exactly
+        /// the size of the struct with the given lengths.
         pub fn fromOwnedBytes(bytes: []align(@alignOf(Layout)) u8, lens: Lengths) Error!Self {
             if (bytes.len != calcSize(lens)) return error.InvalidLength;
             return .{
                 .ptr = bytes.ptr,
+                .lens = lens,
+            };
+        }
+
+        /// Converts the byte buffer into a `ResizableStruct`. The caller is
+        /// responsible for freeing the underlying bytes. Calling `resize` or
+        /// `deinit` on the returned value is illegal behavior. Returns an error
+        /// when the slice is too small.
+        pub fn fromBuffer(buf: []align(@alignOf(Layout)) u8, lens: Lengths) Error!Self {
+            if (buf.len < calcSize(lens)) return error.InvalidLength;
+            return .{
+                .ptr = buf.ptr,
                 .lens = lens,
             };
         }
@@ -178,15 +201,6 @@ pub fn ResizableStruct(comptime Layout: type) type {
         /// Returns the byte alignment of the given field.
         fn alignOf(comptime field_name: []const u8) usize {
             return std.meta.fieldInfo(Layout, @field(FieldEnum(Layout), field_name)).alignment;
-        }
-
-        /// Calculate the byte size of this struct given the lengths of its `ResizableArray` fields.
-        fn calcSize(lens: Lengths) usize {
-            const tail_field = field_info[field_info.len - 1].name;
-            const tail_size = sizeOf(tail_field, lens);
-            const tail_offset = offsetOf(tail_field, lens);
-
-            return std.mem.alignForward(usize, tail_offset + tail_size, @alignOf(Layout));
         }
     };
 }
@@ -387,6 +401,24 @@ test "asBytes" {
     };
 
     try testing.expectEqualSlices(u8, std.mem.asBytes(packet[0..]), bytes.asBytes());
+}
+
+test "fromBuffer" {
+    var buf: [1024]u8 align(2) = undefined;
+
+    const Bytes = ResizableStruct(struct {
+        len: u16,
+        data: ResizableArray(u16),
+    });
+
+    const bytes = try Bytes.fromBuffer(@ptrCast(buf[0..]), .{ .data = 4 });
+    const data = bytes.get(.data);
+    data[0] = 0xD00D;
+    data[1] = 0xCAFE;
+    data[2] = 0xBEEF;
+    data[3] = 0xDEAD;
+
+    try testing.expectEqualSlices(u16, &.{ 0xD00D, 0xCAFE, 0xBEEF, 0xDEAD }, bytes.get(.data));
 }
 
 const std = @import("std");
