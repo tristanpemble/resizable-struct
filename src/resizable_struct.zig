@@ -109,7 +109,7 @@ pub fn ResizableStruct(comptime Layout: type) type {
         }
 
         /// Returns a slice of the underlying bytes.
-        pub fn asBytes(self: Self) []u8 {
+        pub fn asBytes(self: Self) []align(@alignOf(Layout)) u8 {
             return self.ptr[0..calcSize(self.lens)];
         }
 
@@ -117,27 +117,26 @@ pub fn ResizableStruct(comptime Layout: type) type {
         pub fn resize(self: *Self, allocator: Allocator, new_lens: Lengths) Error!void {
             if (std.meta.eql(self.lens, new_lens)) return;
 
-            // For now, we always reallocate when resizing. We could try to support resizing
-            // in place, but the added complexity seems unlikely to be worth it for most use cases.
-            const new_size = calcSize(new_lens);
-            const new_bytes = try allocator.alignedAlloc(u8, @alignOf(Layout), new_size);
+            const old = self.*;
+            const new = try Self.init(allocator, new_lens);
 
             inline for (field_info) |field| {
-                const old_field_offset = offsetOf(field.name, self.lens);
-                const old_field_size = sizeOf(field.name, self.lens);
-                const old_field_bytes = self.ptr[old_field_offset .. old_field_offset + old_field_size];
+                const tag = @field(FieldEnum(Layout), field.name);
+                const old_field = old.get(tag);
+                const new_field = new.get(tag);
 
-                const new_field_offset = offsetOf(field.name, new_lens);
-                const new_field_size = sizeOf(field.name, new_lens);
-                const new_field_bytes = new_bytes[new_field_offset .. new_field_offset + new_field_size];
-
-                const copy_size = @min(old_field_size, new_field_size);
-                @memcpy(new_field_bytes[0..copy_size], old_field_bytes[0..copy_size]);
+                if (comptime isResizableArray(@FieldType(Layout, field.name))) {
+                    const len = @min(old_field.len, new_field.len);
+                    @memcpy(new_field[0..len], old_field[0..len]);
+                } else {
+                    new_field.* = old_field.*;
+                }
             }
 
-            allocator.free(self.ptr[0..calcSize(self.lens)]);
-            self.ptr = new_bytes.ptr;
-            self.lens = new_lens;
+            self.ptr = new.ptr;
+            self.lens = new.lens;
+
+            allocator.free(old.asBytes());
         }
 
         /// Returns a pointer to the given field. If the field is a `ResizableArray`, returns a slice of elements.
